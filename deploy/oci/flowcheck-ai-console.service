@@ -8,7 +8,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/flowcheck-ai/apps/ai-console
 EnvironmentFile=/home/ubuntu/flowcheck-ai/.env
-Environment=AI_BACKEND_URL=http://127.0.0.1:8890
+Environment=AI_BACKEND_URL=http://127.0.0.1:8892
 ExecStart=/usr/local/bin/node /home/ubuntu/flowcheck-ai/apps/ai-console/node_modules/next/dist/bin/next start --hostname 100.86.214.117 --port 8891
 SuccessExitStatus=143
 TimeoutStopSec=10

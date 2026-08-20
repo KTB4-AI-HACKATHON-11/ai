@@ -15,8 +15,8 @@ Environment=AI_REQUEST_LOG_PATH=/home/ubuntu/flowcheck-ai/data/ai-request-log.js
 Environment=AI_MAX_CONCURRENT_REQUESTS=16
 Environment=AI_MAX_QUEUED_REQUESTS=64
 Environment=AI_QUEUE_TIMEOUT_SECONDS=3
-ExecStart=/home/ubuntu/flowcheck-ai/.venv/bin/uvicorn ai_backend.main:app --app-dir /home/ubuntu/flowcheck-ai/apps/ai-backend --host 127.0.0.1 --port 8890
-ExecStartPost=/usr/bin/curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 --max-time 2 http://127.0.0.1:8890/healthz
+ExecStart=/home/ubuntu/flowcheck-ai/.venv/bin/uvicorn ai_backend.main:app --app-dir /home/ubuntu/flowcheck-ai/apps/ai-backend --host 127.0.0.1 --port 8892
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 --max-time 2 http://127.0.0.1:8892/healthz
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
