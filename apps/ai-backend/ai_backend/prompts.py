@@ -19,6 +19,18 @@ TASK_GENERATION_PROMPT = """
 입력에 나타난 업무만 만들고 권장 수행 순서대로 정렬한다.
 """.strip()
 
+# 운영 콘솔에 저장된 사용자 프롬프트와 관계없이 항상 붙는 생성 가능성 판정 계약이다.
+# 판정을 키워드 규칙으로 선처리하지 않고 같은 LLM 호출 안에서 수행한다.
+TASK_GENERATION_DECISION_CONTRACT = """
+태스크를 작성하기 전에 사용자 입력이 실제 매장 업무로 변환 가능한지 먼저 판단한다.
+입력에서 하나 이상의 구체적인 행동이나 점검 대상과 완료 상태를 추론 없이 식별할 수 있으면 GENERATE다.
+짧거나 다소 구어체여도 실제로 수행할 행동과 대상이 분명하면 GENERATE로 처리한다.
+무의미한 글자 나열, 맥락 없는 헛소리, 인사나 감상만 있는 문장, 업무와 무관한 질문, 행동 또는 대상이 없어 요구사항을 새로 지어내야 하는 입력은 REJECT다.
+위험하거나 불법적인 행동을 요구하거나 사진이나 체크 방식으로 책임 있게 태스크화할 수 없는 요청도 REJECT다.
+REJECT일 때는 만들 수 없는 이유와 어떤 업무 정보를 더 적어야 하는지를 300자 이내의 짧은 한국어 reason으로 설명한다.
+REJECT를 억지로 태스크로 바꾸지 말고, GENERATE일 때는 입력에 없는 세부 요구사항을 추가하지 않는다.
+""".strip()
+
 KNOWLEDGE_ANSWER_PROMPT = """
 당신은 매장 알바생이 업무 중 궁금한 점을 확인하도록 돕는 안내자다.
 사용자 입력의 information은 사장이 기록한 공지, 매장 운영 정보와 이벤트 정보다.
@@ -59,13 +71,17 @@ REFERENCE_PHOTO_IDENTITY_CONTRACT = """
 """.strip()
 
 TASK_GENERATION_FORMAT_CORRECTION = (
-    "이전 결과가 계약을 어겼다. tasks에는 태스크를 1개 이상 20개 이하로 넣고 "
-    "빈 배열로 반환하지 않는다. PHOTO의 rule은 문자열, CHECK의 rule은 null이어야 한다."
+    "이전 결과가 계약을 어겼다. GENERATE이면 decision은 GENERATE, reason은 null, "
+    "tasks에는 태스크를 1개 이상 20개 이하로 넣는다. REJECT이면 decision은 REJECT, "
+    "reason은 짧은 한국어 문자열, tasks는 빈 배열이어야 한다. PHOTO의 rule은 문자열, "
+    "CHECK의 rule은 null이어야 한다."
 )
 
 CEREBRAS_TASK_GENERATION_FORMAT_CORRECTION = (
-    "이전 결과가 계약을 어겼다. 첫 태스크는 firstTask 객체에 쓰고 나머지 태스크는 "
-    "additionalTasks 배열에 쓴다. PHOTO의 rule은 문자열, CHECK의 rule은 null이어야 한다."
+    "이전 결과가 계약을 어겼다. GENERATE이면 decision은 GENERATE, reason은 null, "
+    "첫 태스크는 firstTask 객체에 쓰고 나머지는 additionalTasks 배열에 쓴다. "
+    "REJECT이면 decision은 REJECT, reason은 짧은 한국어 문자열, firstTask는 null, "
+    "additionalTasks는 빈 배열이어야 한다. PHOTO의 rule은 문자열, CHECK의 rule은 null이어야 한다."
 )
 
 PHOTO_CHECK_FORMAT_CORRECTION = (
@@ -78,9 +94,10 @@ PHOTO_CHECK_FIX_CORRECTION = (
 
 TASK_GENERATION_JSON_CONTRACT = """
 응답은 설명이나 코드 블록 없이 다음 형태의 JSON 객체 하나만 작성한다.
-최상위에는 firstTask 객체와 additionalTasks 배열만 둔다.
-사용자 입력에 대응하는 첫 태스크는 firstTask에 쓰고 나머지 태스크는 additionalTasks에 순서대로 쓴다.
-전체 태스크는 firstTask를 포함해 1개 이상 20개 이하로 작성한다.
+최상위에는 decision, reason, firstTask, additionalTasks 네 키만 둔다.
+생성 가능하면 decision은 GENERATE, reason은 null, 첫 태스크는 firstTask 객체, 나머지는 additionalTasks 배열에 쓴다.
+GENERATE의 전체 태스크는 firstTask를 포함해 1개 이상 20개 이하로 작성한다.
+생성하기 어렵거나 부적절하면 decision은 REJECT, reason은 300자 이내의 짧은 한국어 사유, firstTask는 null, additionalTasks는 빈 배열로 쓴다.
 각 태스크에는 title, instruction, completionType, rule 네 키를 모두 둔다.
 completionType은 PHOTO 또는 CHECK 문자열이다.
 PHOTO의 rule은 비어 있지 않은 문자열이고 CHECK의 rule은 null이다.

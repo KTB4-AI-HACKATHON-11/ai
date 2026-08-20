@@ -19,7 +19,12 @@ from starlette.responses import Response
 
 from .concurrency import AiBusyError
 from .config import LUNA_MODEL, Settings
-from .luna import AiOperations, AiUnavailableError, ConfigurableAiOperations
+from .luna import (
+    AiOperations,
+    AiUnavailableError,
+    ConfigurableAiOperations,
+    TaskGenerationRejectedError,
+)
 from .photo import (
     PhotoUnavailableError,
     ReferencePhotoCache,
@@ -29,6 +34,7 @@ from .photo import (
 )
 from .prompts import (
     KNOWLEDGE_ANSWER_PROMPT,
+    TASK_GENERATION_DECISION_CONTRACT,
     TASK_GENERATION_JSON_CONTRACT,
     photo_check_instructions,
 )
@@ -326,7 +332,9 @@ def create_app(
     def admin_settings_response() -> AdminSettingsResponse:
         current = store.get()
         is_cerebras = current.provider == "CEREBRAS"
-        effective_task_prompt = current.task_generation_prompt
+        effective_task_prompt = (
+            f"{current.task_generation_prompt}\n{TASK_GENERATION_DECISION_CONTRACT}"
+        )
         if is_cerebras:
             effective_task_prompt = (
                 f"{effective_task_prompt}\n{TASK_GENERATION_JSON_CONTRACT}"
@@ -444,6 +452,17 @@ def create_app(
     ) -> JSONResponse:
         return _error(503, "AI_UNAVAILABLE", "AI 처리를 완료하지 못했습니다.")
 
+    @app.exception_handler(TaskGenerationRejectedError)
+    async def task_generation_rejected_handler(
+        _request: object, error_value: TaskGenerationRejectedError
+    ) -> JSONResponse:
+        return _error(
+            422,
+            "TASK_GENERATION_REJECTED",
+            error_value.reason,
+            "message",
+        )
+
     @app.exception_handler(AiBusyError)
     async def ai_busy_handler(
         _request: object, error_value: AiBusyError
@@ -472,7 +491,7 @@ def create_app(
     @app.post(
         "/v1/tasks/generate",
         response_model=TaskGenerationResponse,
-        responses=errors,
+        responses={**errors, 422: {"model": ErrorResponse}},
         dependencies=[Depends(require_auth)],
     )
     async def generate_tasks(payload: TaskGenerationRequest) -> TaskGenerationResponse:

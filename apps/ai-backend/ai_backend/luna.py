@@ -23,6 +23,7 @@ from .prompts import (
     PHOTO_CHECK_FIX_CORRECTION,
     PHOTO_CHECK_FORMAT_CORRECTION,
     PHOTO_CHECK_PROMPT,
+    TASK_GENERATION_DECISION_CONTRACT,
     TASK_GENERATION_FORMAT_CORRECTION,
     TASK_GENERATION_JSON_CONTRACT,
     TASK_GENERATION_PROMPT,
@@ -90,13 +91,28 @@ CEREBRAS_TASK_RESPONSE_FORMAT = {
         "schema": {
             "type": "object",
             "properties": {
-                "firstTask": CEREBRAS_TASK_ITEM_SCHEMA,
+                "decision": {
+                    "type": "string",
+                    "enum": ["GENERATE", "REJECT"],
+                },
+                "reason": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "null"},
+                    ]
+                },
+                "firstTask": {
+                    "anyOf": [
+                        CEREBRAS_TASK_ITEM_SCHEMA,
+                        {"type": "null"},
+                    ]
+                },
                 "additionalTasks": {
                     "type": "array",
                     "items": CEREBRAS_TASK_ITEM_SCHEMA,
                 },
             },
-            "required": ["firstTask", "additionalTasks"],
+            "required": ["decision", "reason", "firstTask", "additionalTasks"],
             "additionalProperties": False,
         },
     },
@@ -105,6 +121,12 @@ CEREBRAS_TASK_RESPONSE_FORMAT = {
 
 class AiUnavailableError(Exception):
     def __init__(self, reason: str = "unavailable") -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class TaskGenerationRejectedError(Exception):
+    def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
 
@@ -195,7 +217,11 @@ class LunaOperations:
             try:
                 response = await self._client.responses.parse(
                     model=self._model,
-                    instructions=instructions(self._task_generation_prompt, correction),
+                    instructions=instructions(
+                        f"{self._task_generation_prompt}\n"
+                        f"{TASK_GENERATION_DECISION_CONTRACT}",
+                        correction,
+                    ),
                     input=message,
                     text_format=ModelTaskGenerationResponse,
                 )
@@ -206,11 +232,19 @@ class LunaOperations:
                 raise AiUnavailableError(_record_provider_error(error)) from error
             parsed = _parsed_output(response)
             try:
-                return TaskGenerationResponse.model_validate(
+                decision = ModelTaskGenerationResponse.model_validate(
                     parsed.model_dump()
                     if isinstance(parsed, ModelTaskGenerationResponse)
                     else parsed
                 )
+                if decision.decision == "REJECT":
+                    raise TaskGenerationRejectedError(decision.reason or "")
+                return TaskGenerationResponse.model_validate(
+                    {"tasks": [task.model_dump() for task in decision.tasks]}
+                )
+            except TaskGenerationRejectedError:
+                _clear_provider_output_trace()
+                raise
             except ValidationError:
                 correction = TASK_GENERATION_FORMAT_CORRECTION
         update_request_trace(provider_failure_reason="invalid_model_output")
@@ -383,7 +417,9 @@ class CerebrasOperations:
         for _ in range(2):
             try:
                 prompt = (
-                    f"{self._task_generation_prompt}\n{TASK_GENERATION_JSON_CONTRACT}"
+                    f"{self._task_generation_prompt}\n"
+                    f"{TASK_GENERATION_DECISION_CONTRACT}\n"
+                    f"{TASK_GENERATION_JSON_CONTRACT}"
                 )
                 response = await asyncio.wait_for(
                     self._client.chat.completions.create(
@@ -405,6 +441,9 @@ class CerebrasOperations:
                 parsed = ModelCerebrasTaskGenerationResponse.model_validate_json(
                     _chat_output(response)
                 )
+                if parsed.decision == "REJECT":
+                    _clear_provider_output_trace()
+                    raise TaskGenerationRejectedError(parsed.reason or "")
                 candidate = parsed.model_dump()
                 result = TaskGenerationResponse.model_validate(
                     {

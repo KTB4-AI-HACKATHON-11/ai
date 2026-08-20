@@ -6,10 +6,13 @@ import json
 from io import BytesIO
 
 import httpx
+from fastapi import FastAPI
+from PIL import Image
+
 from ai_backend.app import create_app
 from ai_backend.concurrency import AiBusyError
 from ai_backend.config import Settings
-from ai_backend.luna import AiUnavailableError
+from ai_backend.luna import AiUnavailableError, TaskGenerationRejectedError
 from ai_backend.photo import (
     PhotoUnavailableError,
     verified_photo_data_url,
@@ -24,8 +27,6 @@ from ai_backend.schemas import (
     RetakeResponse,
     TaskGenerationResponse,
 )
-from fastapi import FastAPI
-from PIL import Image
 
 TOKEN = "test-service-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -83,6 +84,13 @@ class FakeAi:
 class BusyAi(FakeAi):
     async def generate_tasks(self, _message: str) -> TaskGenerationResponse:
         raise AiBusyError
+
+
+class RejectingAi(FakeAi):
+    async def generate_tasks(self, _message: str) -> TaskGenerationResponse:
+        raise TaskGenerationRejectedError(
+            "수행할 업무와 대상을 확인할 수 없습니다. 구체적인 작업을 적어 주세요."
+        )
 
 
 async def fake_photo_loader(photo: PhotoInput) -> str:
@@ -175,6 +183,26 @@ def test_generates_photo_and_check_tasks() -> None:
         "PHOTO",
         "CHECK",
     ]
+
+
+def test_task_generation_rejection_returns_actionable_422() -> None:
+    response = post(
+        build_app(RejectingAi()),
+        "/v1/tasks/generate",
+        {"message": "아무말 대잔치 으아아"},
+        AUTH,
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": {
+            "code": "TASK_GENERATION_REJECTED",
+            "message": (
+                "수행할 업무와 대상을 확인할 수 없습니다. 구체적인 작업을 적어 주세요."
+            ),
+            "field": "message",
+        }
+    }
 
 
 def test_answers_a_question_from_store_information() -> None:
@@ -833,9 +861,10 @@ def test_admin_settings_do_not_expose_provider_or_service_keys() -> None:
         "cerebras": False,
     }
     assert (
-        payload["effectivePrompts"]["taskGeneration"]
-        == payload["prompts"]["taskGeneration"]
+        payload["prompts"]["taskGeneration"]
+        in payload["effectivePrompts"]["taskGeneration"]
     )
+    assert "REJECT" in payload["effectivePrompts"]["taskGeneration"]
     assert payload["prompts"]["photoCheck"] in payload["effectivePrompts"]["photoCheck"]
     assert "GS25" not in payload["effectivePrompts"]["photoCheck"]
     assert "GS25" in payload["effectivePrompts"]["photoCheckWithReference"]

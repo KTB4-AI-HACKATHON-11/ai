@@ -9,6 +9,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 
 StrictText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -65,12 +66,47 @@ class ModelGeneratedTask(StrictModel):
 
 
 class ModelTaskGenerationResponse(StrictModel):
-    tasks: Annotated[list[ModelGeneratedTask], Field(min_length=1, max_length=20)]
+    decision: Literal["GENERATE", "REJECT"]
+    reason: Annotated[str, Field(max_length=300)] | None
+    tasks: Annotated[list[ModelGeneratedTask], Field(max_length=20)]
+
+    @model_validator(mode="after")
+    def require_consistent_decision(self) -> ModelTaskGenerationResponse:
+        if self.decision == "GENERATE":
+            if self.reason is not None or not self.tasks:
+                raise ValueError(
+                    "GENERATE에는 태스크가 필요하고 reason은 null이어야 합니다."
+                )
+        elif self.tasks or self.reason is None or not self.reason:
+            raise ValueError(
+                "REJECT에는 짧은 reason이 필요하고 tasks는 비어 있어야 합니다."
+            )
+        return self
 
 
 class ModelCerebrasTaskGenerationResponse(StrictModel):
-    firstTask: ModelGeneratedTask
+    decision: Literal["GENERATE", "REJECT"]
+    reason: Annotated[str, Field(max_length=300)] | None
+    firstTask: ModelGeneratedTask | None
     additionalTasks: Annotated[list[ModelGeneratedTask], Field(max_length=19)]
+
+    @model_validator(mode="after")
+    def require_consistent_decision(self) -> ModelCerebrasTaskGenerationResponse:
+        if self.decision == "GENERATE":
+            if self.reason is not None or self.firstTask is None:
+                raise ValueError(
+                    "GENERATE에는 firstTask가 필요하고 reason은 null이어야 합니다."
+                )
+        elif (
+            self.firstTask is not None
+            or self.additionalTasks
+            or self.reason is None
+            or not self.reason
+        ):
+            raise ValueError(
+                "REJECT에는 짧은 reason이 필요하고 태스크는 비어 있어야 합니다."
+            )
+        return self
 
 
 class CheckableTask(StrictModel):

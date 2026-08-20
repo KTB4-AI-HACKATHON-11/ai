@@ -5,6 +5,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+
 from ai_backend.concurrency import AiBusyError
 from ai_backend.config import Settings
 from ai_backend.luna import (
@@ -21,6 +22,7 @@ from ai_backend.luna import (
     FailoverAiOperations,
     LunaOperations,
     TaskGenerationCache,
+    TaskGenerationRejectedError,
     _record_provider_error,
 )
 from ai_backend.request_trace import (
@@ -106,6 +108,8 @@ class FakeCompletions:
 def test_task_generation_corrects_invalid_photo_rule_once() -> None:
     invalid = ModelTaskGenerationResponse.model_validate(
         {
+            "decision": "GENERATE",
+            "reason": None,
             "tasks": [
                 {
                     "title": "POS 확인",
@@ -113,11 +117,13 @@ def test_task_generation_corrects_invalid_photo_rule_once() -> None:
                     "completionType": "PHOTO",
                     "rule": None,
                 }
-            ]
+            ],
         }
     )
     valid = ModelTaskGenerationResponse.model_validate(
         {
+            "decision": "GENERATE",
+            "reason": None,
             "tasks": [
                 {
                     "title": "POS 확인",
@@ -125,7 +131,7 @@ def test_task_generation_corrects_invalid_photo_rule_once() -> None:
                     "completionType": "PHOTO",
                     "rule": "POS 화면이 켜져 있어야 한다.",
                 }
-            ]
+            ],
         }
     )
     responses = FakeResponses([response_with(invalid), response_with(valid)])
@@ -142,6 +148,8 @@ def test_task_generation_corrects_invalid_photo_rule_once() -> None:
 def test_task_generation_correction_forbids_an_empty_task_list() -> None:
     valid = ModelTaskGenerationResponse.model_validate(
         {
+            "decision": "GENERATE",
+            "reason": None,
             "tasks": [
                 {
                     "title": "POS 확인",
@@ -149,10 +157,15 @@ def test_task_generation_correction_forbids_an_empty_task_list() -> None:
                     "completionType": "PHOTO",
                     "rule": "POS 화면이 켜져 있어야 한다.",
                 }
-            ]
+            ],
         }
     )
-    responses = FakeResponses([response_with({"tasks": []}), response_with(valid)])
+    responses = FakeResponses(
+        [
+            response_with({"decision": "GENERATE", "reason": None, "tasks": []}),
+            response_with(valid),
+        ]
+    )
     service = LunaOperations("test-key")
     service._client = SimpleNamespace(responses=responses)  # type: ignore[assignment]
 
@@ -160,8 +173,27 @@ def test_task_generation_correction_forbids_an_empty_task_list() -> None:
 
     assert result.tasks[0].title == "POS 확인"
     assert len(responses.instructions) == 2
-    assert "1개 이상 20개 이하" in responses.instructions[1]
-    assert "빈 배열로 반환하지 않는다" in responses.instructions[1]
+    assert "GENERATE" in responses.instructions[1]
+    assert "REJECT" in responses.instructions[1]
+
+
+def test_luna_rejects_a_message_without_a_concrete_task() -> None:
+    rejected = ModelTaskGenerationResponse.model_validate(
+        {
+            "decision": "REJECT",
+            "reason": "수행할 업무와 대상을 확인할 수 없습니다. 구체적인 작업을 적어 주세요.",
+            "tasks": [],
+        }
+    )
+    responses = FakeResponses([response_with(rejected)])
+    service = LunaOperations("test-key")
+    service._client = SimpleNamespace(responses=responses)  # type: ignore[assignment]
+
+    with pytest.raises(TaskGenerationRejectedError) as captured:
+        asyncio.run(service.generate_tasks("아무말 대잔치 으아아"))
+
+    assert "구체적인 작업" in captured.value.reason
+    assert len(responses.calls) == 1
 
 
 def test_luna_answers_knowledge_with_the_large_request_timeout() -> None:
@@ -273,7 +305,8 @@ def test_cerebras_generates_tasks_with_configured_prompt() -> None:
     completions = FakeCompletions(
         [
             (
-                '{"firstTask":{"title":"POS 확인","instruction":"POS를 촬영해 주세요.",'
+                '{"decision":"GENERATE","reason":null,'
+                '"firstTask":{"title":"POS 확인","instruction":"POS를 촬영해 주세요.",'
                 '"completionType":"PHOTO","rule":"POS 화면이 켜져 있어야 한다."},'
                 '"additionalTasks":[{"title":"카운터 확인","instruction":"카운터를 촬영해 주세요.",'
                 '"completionType":"PHOTO","rule":"카운터가 정리되어 있어야 한다."}]}'
@@ -304,7 +337,12 @@ def test_cerebras_generates_tasks_with_configured_prompt() -> None:
     assert isinstance(response_format, dict)
     assert response_format["type"] == "json_schema"
     schema = response_format["json_schema"]["schema"]  # type: ignore[index]
-    assert schema["required"] == ["firstTask", "additionalTasks"]
+    assert schema["required"] == [
+        "decision",
+        "reason",
+        "firstTask",
+        "additionalTasks",
+    ]
     assert "tasks" not in schema["properties"]
     additional_tasks_schema = schema["properties"]["additionalTasks"]
     assert "minItems" not in additional_tasks_schema
@@ -318,11 +356,13 @@ def test_cerebras_retries_an_invalid_required_first_task() -> None:
     completions = FakeCompletions(
         [
             (
-                '{"firstTask":{"title":"POS 확인","instruction":"POS를 촬영해 주세요.",'
+                '{"decision":"GENERATE","reason":null,'
+                '"firstTask":{"title":"POS 확인","instruction":"POS를 촬영해 주세요.",'
                 '"completionType":"PHOTO","rule":null},"additionalTasks":[]}'
             ),
             (
-                '{"firstTask":{"title":"POS 확인","instruction":"POS를 촬영해 주세요.",'
+                '{"decision":"GENERATE","reason":null,'
+                '"firstTask":{"title":"POS 확인","instruction":"POS를 촬영해 주세요.",'
                 '"completionType":"PHOTO","rule":"POS 화면이 켜져 있어야 한다."},'
                 '"additionalTasks":[]}'
             ),
@@ -345,6 +385,32 @@ def test_cerebras_retries_an_invalid_required_first_task() -> None:
     retry_prompt = completions.calls[1]["messages"][0]["content"]  # type: ignore[index]
     assert "firstTask 객체" in retry_prompt
     assert "additionalTasks 배열" in retry_prompt
+
+
+def test_cerebras_rejects_a_message_without_a_concrete_task() -> None:
+    completions = FakeCompletions(
+        [
+            (
+                '{"decision":"REJECT","reason":"업무 행동과 대상을 확인할 수 없습니다.",'
+                '"firstTask":null,"additionalTasks":[]}'
+            )
+        ]
+    )
+    service = CerebrasOperations(
+        "test-key",
+        "gemma-4-31b",
+        "내 태스크 프롬프트",
+        "내 사진 프롬프트",
+    )
+    service._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=completions)
+    )
+
+    with pytest.raises(TaskGenerationRejectedError) as captured:
+        asyncio.run(service.generate_tasks("ㅋㅋㅋㅋ 아무거나"))
+
+    assert captured.value.reason == "업무 행동과 대상을 확인할 수 없습니다."
+    assert len(completions.calls) == 1
 
 
 def test_cerebras_answers_knowledge_with_strict_json_and_large_timeout() -> None:
@@ -469,6 +535,8 @@ class StubAiOperations:
 def test_failover_uses_openrouter_when_cerebras_task_generation_fails() -> None:
     expected = ModelTaskGenerationResponse.model_validate(
         {
+            "decision": "GENERATE",
+            "reason": None,
             "tasks": [
                 {
                     "title": "POS 확인",
@@ -476,7 +544,7 @@ def test_failover_uses_openrouter_when_cerebras_task_generation_fails() -> None:
                     "completionType": "CHECK",
                     "rule": None,
                 }
-            ]
+            ],
         }
     )
     primary = StubAiOperations(error=AiUnavailableError("provider_error"))
