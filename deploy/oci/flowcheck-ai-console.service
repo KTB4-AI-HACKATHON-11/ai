@@ -1,0 +1,24 @@
+[Unit]
+Description=Flowcheck AI Backend Console
+Wants=network-online.target
+After=network-online.target tailscaled.service flowcheck-ai-backend.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/flowcheck-ai/apps/ai-console
+EnvironmentFile=/home/ubuntu/flowcheck-ai/.env
+Environment=AI_BACKEND_URL=http://127.0.0.1:8890
+ExecStart=/usr/local/bin/node /home/ubuntu/flowcheck-ai/apps/ai-console/node_modules/next/dist/bin/next start --hostname 100.86.214.117 --port 8891
+SuccessExitStatus=143
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+IPAddressDeny=any
+IPAddressAllow=localhost
+IPAddressAllow=100.64.0.0/10
+
+[Install]
+WantedBy=multi-user.target

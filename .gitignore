@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+.data/
+apps/ai-backend/.venv/
+apps/ai-backend/.pytest_cache/
+apps/ai-backend/.ruff_cache/
+**/__pycache__/
+*.py[cod]
+apps/ai-console/.next/
+apps/ai-console/node_modules/
+.DS_Store
+*.tsbuildinfo
