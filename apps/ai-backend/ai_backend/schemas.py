@@ -160,6 +160,7 @@ class ModelAttemptCheckResponse(StrictModel):
 AgentToolName = Literal[
     "CREATE_TASK",
     "UPDATE_TASK",
+    "DELETE_TASK",
     "COMPLETE_CHECKLIST",
     "REPLACE_STORE_INFO",
     "SEND_NOTIFICATION",
@@ -325,6 +326,8 @@ class AgentToolCall(StrictModel):
                 ]
             ):
                 raise ValueError("UPDATE_TASK 인자가 부족합니다.")
+        elif self.tool == "DELETE_TASK" and self.taskId is None:
+            raise ValueError("DELETE_TASK 인자가 부족합니다.")
         elif self.tool == "COMPLETE_CHECKLIST":
             if self.taskId is None or not self.runId or self.checklistId is None:
                 raise ValueError("COMPLETE_CHECKLIST 인자가 부족합니다.")

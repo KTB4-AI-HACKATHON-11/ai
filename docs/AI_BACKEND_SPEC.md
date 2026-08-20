@@ -437,6 +437,7 @@ AI 답변: 3,500원입니다.
 | --- | --- | --- |
 | `CREATE_TASK` | 1회성 태스크 생성 | `title`, `sourceMessage`, `workerId`, 미래 `dueAt`, `notifyOnCompletion`, `checklists` |
 | `UPDATE_TASK` | 태스크 제목·설명·담당자·마감·완료 알림·활성 상태 수정 | `taskId`와 변경할 필드. 반복 태스크는 제목·완료 알림·활성 상태만 변경 가능 |
+| `DELETE_TASK` | 기존 태스크 비활성화 | 정확히 특정된 `taskId`; 기존 수행 이력은 보존 |
 | `COMPLETE_CHECKLIST` | 현재 실행 회차의 CHECK 항목 완료 | `taskId`, `runId`, `checklistId`; PHOTO와 체크 해제는 지원하지 않음 |
 | `REPLACE_STORE_INFO` | 매장 정보 문서 전체 교체 | 기존 항목은 `storeInfoId`를 유지하고 새 항목만 `null`; 명시적으로 삭제할 ID는 `removedStoreInfoIds` |
 | `SEND_NOTIFICATION` | 그룹 WORKER에게 브라우저 알림 예약 | `recipientMemberIds`, `notificationMessage` |

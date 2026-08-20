@@ -156,6 +156,7 @@ CEREBRAS_AGENT_TOOL_CALL_PROPERTIES = {
         "enum": [
             "CREATE_TASK",
             "UPDATE_TASK",
+            "DELETE_TASK",
             "COMPLETE_CHECKLIST",
             "REPLACE_STORE_INFO",
             "SEND_NOTIFICATION",
