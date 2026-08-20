@@ -7,18 +7,22 @@ from io import BytesIO
 
 import httpx
 import pytest
-from PIL import Image
-
 from ai_backend.photo import (
+    MODEL_PHOTO_MAX_BYTES,
+    MODEL_PHOTO_MAX_DIMENSION,
     PhotoUnavailableError,
+    ReferencePhotoCache,
     load_verified_photo,
     normalize_cerebras_photo,
     photo_log_preview,
     verify_photo_bytes,
 )
 from ai_backend.schemas import PhotoInput
+from PIL import Image
 
-JPEG = b"\xff\xd8\xff\xd9"
+JPEG_BUFFER = BytesIO()
+Image.new("RGB", (16, 12), "navy").save(JPEG_BUFFER, format="JPEG", quality=90)
+JPEG = JPEG_BUFFER.getvalue()
 
 
 async def public_resolver(_host: str, _port: int) -> set[str]:
@@ -37,7 +41,11 @@ def photo(**overrides: object) -> PhotoInput:
 
 
 def test_verified_photo_becomes_data_url() -> None:
-    assert verify_photo_bytes(photo(), JPEG) == "data:image/jpeg;base64,/9j/2Q=="
+    result = verify_photo_bytes(photo(), JPEG)
+
+    assert result.startswith("data:image/jpeg;base64,")
+    with Image.open(BytesIO(base64.b64decode(result.split(",", 1)[1]))) as image:
+        assert image.size == (16, 12)
 
 
 @pytest.mark.parametrize(
@@ -67,7 +75,49 @@ def test_photo_download_is_verified_without_following_redirects() -> None:
             resolver=public_resolver,
         )
     )
-    assert result == "data:image/jpeg;base64,/9j/2Q=="
+    assert result.startswith("data:image/jpeg;base64,")
+
+
+def test_model_photo_is_resized_and_bounded() -> None:
+    source = BytesIO()
+    Image.effect_noise((2_400, 1_600), 90).convert("RGB").save(
+        source,
+        format="JPEG",
+        quality=95,
+    )
+    raw = source.getvalue()
+
+    result = verify_photo_bytes(
+        photo(sizeBytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()),
+        raw,
+    )
+
+    rendered = base64.b64decode(result.split(",", 1)[1])
+    assert len(rendered) <= MODEL_PHOTO_MAX_BYTES
+    with Image.open(BytesIO(rendered)) as image:
+        assert max(image.size) <= MODEL_PHOTO_MAX_DIMENSION
+
+
+def test_reference_photo_cache_reuses_only_a_verified_value() -> None:
+    cache = ReferencePhotoCache(max_entries=2, max_bytes=1024 * 1024)
+    calls = 0
+
+    async def run() -> tuple[str, str]:
+        nonlocal calls
+
+        async def loader() -> str:
+            nonlocal calls
+            calls += 1
+            return verify_photo_bytes(photo(), JPEG)
+
+        first = await cache.get_or_load(photo(), loader)
+        second = await cache.get_or_load(photo(), loader)
+        return first, second
+
+    first, second = asyncio.run(run())
+
+    assert first == second
+    assert calls == 1
 
 
 def test_photo_download_rejects_redirect() -> None:

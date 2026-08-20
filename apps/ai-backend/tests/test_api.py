@@ -6,9 +6,6 @@ import json
 from io import BytesIO
 
 import httpx
-from fastapi import FastAPI
-from PIL import Image
-
 from ai_backend.app import create_app
 from ai_backend.concurrency import AiBusyError
 from ai_backend.config import Settings
@@ -27,10 +24,14 @@ from ai_backend.schemas import (
     RetakeResponse,
     TaskGenerationResponse,
 )
+from fastapi import FastAPI
+from PIL import Image
 
 TOKEN = "test-service-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
-PHOTO_BYTES = b"\xff\xd8\xff\xd9"
+PHOTO_BUFFER = BytesIO()
+Image.new("RGB", (16, 12), "navy").save(PHOTO_BUFFER, format="JPEG", quality=90)
+PHOTO_BYTES = PHOTO_BUFFER.getvalue()
 PHOTO = {
     "mimeType": "image/jpeg",
     "sizeBytes": len(PHOTO_BYTES),
@@ -463,7 +464,79 @@ def test_checks_a_photo_with_an_optional_reference_photo() -> None:
     )
 
     assert response.status_code == 200
-    assert ai.reference_photo_data_url == "data:image/jpeg;base64,/9j/2Q=="
+    assert ai.reference_photo_data_url is not None
+    assert ai.reference_photo_data_url.startswith("data:image/jpeg;base64,")
+
+
+def test_json_photos_are_downloaded_in_parallel() -> None:
+    active_loads = 0
+    max_active_loads = 0
+
+    async def delayed_loader(photo: PhotoInput) -> str:
+        nonlocal active_loads, max_active_loads
+        active_loads += 1
+        max_active_loads = max(max_active_loads, active_loads)
+        try:
+            await asyncio.sleep(0.02)
+            return verify_photo_bytes(photo, PHOTO_BYTES)
+        finally:
+            active_loads -= 1
+
+    app = create_app(
+        Settings(openrouter_api_key="test-key", service_token=TOKEN),
+        ai=FakeAi(),
+        photo_loader=delayed_loader,
+    )
+    response = post(
+        app,
+        "/v1/attempts/check",
+        {
+            "task": {
+                "title": "POS",
+                "instruction": "촬영",
+                "rule": "모범 사진과 같은 상태여야 한다.",
+            },
+            "photo": PHOTO,
+            "referencePhoto": REFERENCE_PHOTO,
+        },
+        AUTH,
+    )
+
+    assert response.status_code == 200
+    assert max_active_loads == 2
+
+
+def test_reference_photo_download_is_reused_by_sha256() -> None:
+    photo_loads = 0
+    reference_loads = 0
+
+    async def counting_loader(photo: PhotoInput) -> str:
+        nonlocal photo_loads, reference_loads
+        if "reference" in str(photo.url):
+            reference_loads += 1
+        else:
+            photo_loads += 1
+        return verify_photo_bytes(photo, PHOTO_BYTES)
+
+    app = create_app(
+        Settings(openrouter_api_key="test-key", service_token=TOKEN),
+        ai=FakeAi(),
+        photo_loader=counting_loader,
+    )
+    payload = {
+        "task": {
+            "title": "POS",
+            "instruction": "촬영",
+            "rule": "모범 사진과 같은 상태여야 한다.",
+        },
+        "photo": PHOTO,
+        "referencePhoto": REFERENCE_PHOTO,
+    }
+
+    assert post(app, "/v1/attempts/check", payload, AUTH).status_code == 200
+    assert post(app, "/v1/attempts/check", payload, AUTH).status_code == 200
+    assert photo_loads == 2
+    assert reference_loads == 1
 
 
 def test_checks_a_directly_uploaded_photo() -> None:

@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Annotated
 from urllib.parse import urlsplit, urlunsplit
@@ -21,8 +22,9 @@ from .config import LUNA_MODEL, Settings
 from .luna import AiOperations, AiUnavailableError, ConfigurableAiOperations
 from .photo import (
     PhotoUnavailableError,
+    ReferencePhotoCache,
+    SharedPhotoDownloader,
     load_uploaded_photo,
-    load_verified_photo,
     photo_log_preview,
 )
 from .prompts import (
@@ -220,15 +222,31 @@ def _validation_error_detail(
 def create_app(
     settings: Settings,
     ai: AiOperations | None = None,
-    photo_loader: PhotoLoader = load_verified_photo,
+    photo_loader: PhotoLoader | None = None,
     runtime_store: RuntimeSettingsStore | None = None,
     request_log_store: RequestLogStore | None = None,
 ) -> FastAPI:
     store = runtime_store or RuntimeSettingsStore(settings)
     logs = request_log_store or RequestLogStore(settings.request_log_path)
     service = ai or ConfigurableAiOperations(settings, store)
+    shared_photo_downloader = SharedPhotoDownloader() if photo_loader is None else None
+    active_photo_loader = photo_loader or shared_photo_downloader
+    reference_photo_cache = ReferencePhotoCache()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            if shared_photo_downloader is not None:
+                await shared_photo_downloader.aclose()
+
     app = FastAPI(
-        title="Flowcheck AI Backend", version="1.0.0", docs_url="/docs", redoc_url=None
+        title="Flowcheck AI Backend",
+        version="1.0.0",
+        docs_url="/docs",
+        redoc_url=None,
+        lifespan=lifespan,
     )
     app.add_middleware(
         CORSMiddleware,
@@ -365,9 +383,17 @@ def create_app(
 
     async def load_json_photo(photo: PhotoInput, field: str) -> str:
         try:
-            return await photo_loader(photo)
+            if active_photo_loader is None:
+                raise PhotoUnavailableError
+            return await active_photo_loader(photo)
         except PhotoUnavailableError as error:
             raise PhotoUnavailableError(field) from error
+
+    async def load_reference_json_photo(photo: PhotoInput) -> str:
+        return await reference_photo_cache.get_or_load(
+            photo,
+            lambda: load_json_photo(photo, "referencePhoto"),
+        )
 
     async def load_form_photo(photo: UploadFile, field: str) -> str:
         try:
@@ -493,12 +519,14 @@ def create_app(
                     "요청 본문이 올바른 JSON 형식이 아닙니다."
                 ) from error
             task = payload.task
-            photo_data_url = await load_json_photo(payload.photo, "photo")
-            reference_photo_data_url = (
-                await load_json_photo(payload.referencePhoto, "referencePhoto")
-                if payload.referencePhoto is not None
-                else None
-            )
+            if payload.referencePhoto is None:
+                photo_data_url = await load_json_photo(payload.photo, "photo")
+                reference_photo_data_url = None
+            else:
+                photo_data_url, reference_photo_data_url = await asyncio.gather(
+                    load_json_photo(payload.photo, "photo"),
+                    load_reference_json_photo(payload.referencePhoto),
+                )
         elif media_type == "multipart/form-data":
             try:
                 form = await request.form()
@@ -545,12 +573,14 @@ def create_app(
                 raise InvalidRequestError(
                     "task 필드가 올바른 JSON 형식이 아닙니다.", "task"
                 ) from error
-            photo_data_url = await load_form_photo(photo, "photo")
-            reference_photo_data_url = (
-                await load_form_photo(reference_photo, "referencePhoto")
-                if isinstance(reference_photo, UploadFile)
-                else None
-            )
+            if isinstance(reference_photo, UploadFile):
+                photo_data_url, reference_photo_data_url = await asyncio.gather(
+                    load_form_photo(photo, "photo"),
+                    load_form_photo(reference_photo, "referencePhoto"),
+                )
+            else:
+                photo_data_url = await load_form_photo(photo, "photo")
+                reference_photo_data_url = None
         else:
             _record_request_payload({"contentType": media_type or "[missing]"})
             raise InvalidRequestError(
