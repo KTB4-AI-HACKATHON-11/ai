@@ -20,6 +20,7 @@ AI_BACKEND_BASE_URL=https://flowcheck-ai.yohan.me.kr:8890
 POST https://flowcheck-ai.yohan.me.kr:8890/v1/tasks/generate
 POST https://flowcheck-ai.yohan.me.kr:8890/v1/knowledge/answer
 POST https://flowcheck-ai.yohan.me.kr:8890/v1/attempts/check
+POST https://flowcheck-ai.yohan.me.kr:8890/v1/agent/respond
 ```
 
 AI 백엔드 운영 콘솔은 `http://100.86.214.117:8891`이며 제품 백엔드 연동에는 사용하지 않는다. 제품 백엔드는 TLS가 적용된 Caddy 프록시와 HTTP/2로 통신하고, Caddy만 내부의 `127.0.0.1:8892` Uvicorn에 접근한다.
@@ -29,6 +30,7 @@ AI 백엔드 운영 콘솔은 `http://100.86.214.117:8891`이며 제품 백엔�
 | `POST` | `/v1/tasks/generate` | 자연어에서 태스크 목록 생성 |
 | `POST` | `/v1/knowledge/answer` | 사장이 기록한 매장 정보에 근거해 알바생 질문 답변 |
 | `POST` | `/v1/attempts/check` | 사용자 인증 사진 검사 |
+| `POST` | `/v1/agent/respond` | 그룹 범위 매니저 에이전트의 답변 또는 도구 실행 계획 생성 |
 
 요청 헤더:
 
@@ -323,7 +325,139 @@ AI 답변: 3,500원입니다.
 - 촬영 각도, 밝기나 일시적인 물건 배치 차이만으로는 반려하지 않는다.
 - 어느 한쪽에서 매장 단서가 보이지 않으면 그 이유만으로 반려하지 않고 `rule`을 검사한다.
 
-## 4. 오류
+## 4. 그룹 매니저 에이전트
+
+`POST /v1/agent/respond`
+
+제품 백엔드는 로그인한 매니저가 선택한 그룹의 정보만 `context`에 넣는다. AI 백엔드는 DB나 알림 시스템을 직접 호출하지 않고 답변과 최대 5개의 실행 계획만 반환한다. 제품 백엔드는 그룹 권한과 모든 ID를 다시 검증한 뒤 실행하며, 변경 작업의 최종 성공·실패 문구도 실제 실행 결과로 만든다. 이 요청은 캐시하지 않는다.
+
+### 요청
+
+```json
+{
+  "context": {
+    "groupId": 11,
+    "groupName": "강남점",
+    "currentDateTime": "2026-08-21T10:00:00+09:00",
+    "memberTotalCount": 1,
+    "members": [
+      { "memberId": 24, "nickname": "지우", "role": "WORKER" }
+    ],
+    "taskTotalCount": 1,
+    "tasks": [
+      {
+        "taskId": 31,
+        "runId": "r52-20260821",
+        "title": "오픈 점검",
+        "workerId": 24,
+        "workerNickname": "지우",
+        "dueAt": "2026-08-21T11:00:00+09:00",
+        "status": "IN_PROGRESS",
+        "itemCount": 3,
+        "completedItemCount": 1,
+        "progress": 33,
+        "notifyOnCompletion": true
+      }
+    ],
+    "taskDetails": [
+      {
+        "taskId": 31,
+        "runId": "r52-20260821",
+        "title": "오픈 점검",
+        "sourceMessage": "오픈 전에 조명과 계산대를 점검해 줘",
+        "workerId": 24,
+        "workerNickname": "지우",
+        "dueAt": "2026-08-21T11:00:00+09:00",
+        "status": "IN_PROGRESS",
+        "notifyOnCompletion": true,
+        "checklists": [
+          {
+            "checklistId": 81,
+            "title": "조명 확인",
+            "instruction": "매장 조명이 모두 켜졌는지 확인해 주세요.",
+            "completionType": "CHECK",
+            "rule": null,
+            "performed": false
+          }
+        ]
+      }
+    ],
+    "storeInfo": [
+      {
+        "storeInfoId": 7,
+        "category": "PROMOTION",
+        "title": "오늘 행사",
+        "content": "제로 음료 2+1 행사를 진행한다."
+      }
+    ]
+  },
+  "history": [
+    { "role": "USER", "content": "오픈 점검은 얼마나 끝났어?" },
+    { "role": "ASSISTANT", "content": "3개 중 1개가 완료되어 33% 진행됐습니다." }
+  ],
+  "message": "지우에게 남은 점검을 확인해 달라고 알려줘",
+  "toolResults": []
+}
+```
+
+### 응답
+
+```json
+{
+  "message": "",
+  "toolCalls": [
+    {
+      "callId": "call-1",
+      "tool": "SEND_NOTIFICATION",
+      "dependsOnCallIds": [],
+      "evidenceRefs": ["USER_REQUEST", "MEMBER:24", "TASK_RUN:r52-20260821"],
+      "decisionBasis": "요청에서 지우와 남은 오픈 점검 회차를 정확히 특정했습니다.",
+      "taskId": null,
+      "runId": null,
+      "checklistId": null,
+      "title": null,
+      "sourceMessage": null,
+      "workerId": null,
+      "dueAt": null,
+      "notifyOnCompletion": null,
+      "active": null,
+      "checklists": [],
+      "storeInfo": [],
+      "removedStoreInfoIds": [],
+      "recipientMemberIds": [24],
+      "notificationMessage": "남은 오픈 점검 항목을 확인해 주세요."
+    }
+  ]
+}
+```
+
+### 도구 계약
+
+| 도구 | 용도 | 주요 인자 |
+| --- | --- | --- |
+| `CREATE_TASK` | 1회성 태스크 생성 | `title`, `sourceMessage`, `workerId`, 미래 `dueAt`, `notifyOnCompletion`, `checklists` |
+| `UPDATE_TASK` | 태스크 제목·설명·담당자·마감·완료 알림·활성 상태 수정 | `taskId`와 변경할 필드. 반복 태스크는 제목·완료 알림·활성 상태만 변경 가능 |
+| `COMPLETE_CHECKLIST` | 현재 실행 회차의 CHECK 항목 완료 | `taskId`, `runId`, `checklistId`; PHOTO와 체크 해제는 지원하지 않음 |
+| `REPLACE_STORE_INFO` | 매장 정보 문서 전체 교체 | 기존 항목은 `storeInfoId`를 유지하고 새 항목만 `null`; 명시적으로 삭제할 ID는 `removedStoreInfoIds` |
+| `SEND_NOTIFICATION` | 그룹 WORKER에게 브라우저 알림 예약 | `recipientMemberIds`, `notificationMessage` |
+
+- 조회 질문은 `toolCalls: []`와 근거 있는 `message`로 답한다.
+- 에이전트가 `CREATE_TASK`를 계획할 때 완료 알림은 기본 `notifyOnCompletion: true`다. 사용자가 완료 알림을 끄라고 명시한 경우에만 `false`를 사용한다.
+- 최초 요청의 `toolResults`는 빈 배열이다. 도구가 실패하면 제품 백엔드는 최신 그룹 상태와 지금까지의 실제 실행 결과를 `toolResults`에 넣어 한 번만 다시 요청한다. AI는 성공한 작업을 반복할 수 없고, 안전하게 복구 가능한 후속 작업만 남은 총 5회 한도 안에서 제안한다.
+- 제품 백엔드는 그룹 정보 확인과 각 도구 호출의 `RUNNING`, `SUCCEEDED`, `FAILED` 활동을 미리 정한 짧은 문구로 턴에 저장한다. 프론트는 처리 중에도 이를 조회하며 완료 뒤와 새로고침 뒤에도 누적 내역을 표시한다.
+- 조회와 변경을 함께 요청하면 `message`에는 조회 답변만 넣고 변경은 `toolCalls`로 계획한다. 변경만 요청한 경우에는 실행 성공을 미리 단정하지 않도록 `message`를 빈 문자열로 두며, 제품 백엔드가 실제 실행 결과를 붙인다.
+- 제품 백엔드는 현재 요청과 최근 대화에 관련도가 높은 실행 회차를 최대 5개 골라 `taskDetails`로 제공한다. 여기에는 원문, 담당자, 마감과 CHECK/PHOTO 체크리스트 상세가 포함되며 사진 URL은 포함하지 않는다.
+- 필수 값은 사용자 요청 → 매장 정보 → 관련 `taskDetails` → 현재 태스크 현황 순서로 찾는다. 충분한 근거가 있으면 실행하고, 여러 담당자나 이미 지난 마감처럼 결과를 바꾸는 모호함만 한 가지씩 되묻는다.
+- 예를 들어 “오늘 아침 오프닝 태스크 만들어 줘”라는 요청에 오픈 시각과 오픈 점검 절차가 매장 정보에 있고 담당자도 한 명으로 특정되면, 그 정보로 체크리스트와 미래 마감을 구성한다. 오늘 오픈 시각이 이미 지났으면 임의로 내일로 바꾸지 않고 확인한다.
+- 모든 변경 호출은 `evidenceRefs`와 짧은 `decisionBasis`를 포함한다. 제품 백엔드는 `USER_REQUEST`, `CURRENT_TIME`, `MEMBER:<id>`, `STORE_INFO:<id>`, `TASK:<id>`, `TASK_RUN:<runId>`가 실제 컨텍스트에 존재하는지 다시 검증하고 최종 보고에 표시한다.
+- 후속 호출이 앞 호출의 성공을 전제로 하면 `dependsOnCallIds`를 쓴다. 선행 작업이 실패하면 제품 백엔드는 의존 호출을 실행하지 않는다.
+- 요청 `message`는 1~2,000자다. 응답 `message`는 조회 답변이 있으면 1~4,000자이고 변경 작업만 계획할 때는 빈 문자열일 수 있다. 대화 입력은 최근 30턴, 저장 이력은 그룹별 최근 100턴이다.
+- `toolCalls`는 최대 5개이고 같은 응답 안에서 `callId`는 고유하다.
+- 도구가 쓰지 않는 단일 값은 `null`, 배열 값은 `[]`로 보낸다.
+- `REPLACE_STORE_INFO`는 기존 ID를 결과 또는 삭제 목록에서 하나라도 누락하면 제품 백엔드가 전체 교체를 거부한다.
+- 알림 메시지는 최대 300자이고 한 호출의 수신자는 최대 20명이다.
+
+## 5. 오류
 
 ```json
 {

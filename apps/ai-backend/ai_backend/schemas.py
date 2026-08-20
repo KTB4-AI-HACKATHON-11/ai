@@ -157,6 +157,219 @@ class ModelAttemptCheckResponse(StrictModel):
     fix: str | None
 
 
+AgentToolName = Literal[
+    "CREATE_TASK",
+    "UPDATE_TASK",
+    "COMPLETE_CHECKLIST",
+    "REPLACE_STORE_INFO",
+    "SEND_NOTIFICATION",
+]
+
+
+class AgentMember(StrictModel):
+    memberId: int = Field(gt=0)
+    nickname: Annotated[StrictText, Field(max_length=30)]
+    role: Literal["MANAGER", "WORKER"]
+
+
+class AgentTask(StrictModel):
+    taskId: int = Field(gt=0)
+    runId: Annotated[StrictText, Field(max_length=80)]
+    title: Annotated[StrictText, Field(max_length=80)]
+    workerId: int | None = Field(default=None, gt=0)
+    workerNickname: Annotated[str, Field(max_length=30)] | None = None
+    dueAt: Annotated[str, Field(max_length=50)] | None = None
+    status: Literal["WAITING", "IN_PROGRESS", "COMPLETED", "OVERDUE"]
+    itemCount: int = Field(ge=0, le=20)
+    completedItemCount: int = Field(ge=0, le=20)
+    progress: int = Field(ge=0, le=100)
+    notifyOnCompletion: bool
+
+
+class AgentStoreInfoItem(StrictModel):
+    storeInfoId: int | None = Field(gt=0)
+    category: Literal["LOCATION", "PROMOTION", "DELIVERY", "EQUIPMENT", "RULE", "ETC"]
+    title: Annotated[StrictText, Field(max_length=60)]
+    content: Annotated[StrictText, Field(max_length=1_000)]
+
+
+class AgentTaskDetailChecklist(StrictModel):
+    checklistId: int = Field(gt=0)
+    title: Annotated[StrictText, Field(max_length=80)]
+    instruction: Annotated[StrictText, Field(max_length=500)]
+    completionType: Literal["PHOTO", "CHECK"]
+    rule: Annotated[str, Field(max_length=1_000)] | None
+    performed: bool
+
+
+class AgentTaskDetail(StrictModel):
+    taskId: int = Field(gt=0)
+    runId: Annotated[StrictText, Field(max_length=80)]
+    title: Annotated[StrictText, Field(max_length=80)]
+    sourceMessage: Annotated[StrictText, Field(max_length=2_000)]
+    workerId: int | None = Field(default=None, gt=0)
+    workerNickname: Annotated[str, Field(max_length=30)] | None = None
+    dueAt: Annotated[str, Field(max_length=50)] | None = None
+    status: Literal["WAITING", "IN_PROGRESS", "COMPLETED", "OVERDUE"]
+    notifyOnCompletion: bool
+    checklists: Annotated[list[AgentTaskDetailChecklist], Field(max_length=20)]
+
+
+class AgentConversationMessage(StrictModel):
+    role: Literal["USER", "ASSISTANT"]
+    content: Annotated[StrictText, Field(max_length=4_000)]
+
+
+class AgentExecutionResult(StrictModel):
+    callId: Annotated[StrictText, Field(max_length=40)]
+    tool: AgentToolName
+    success: bool
+    summary: Annotated[StrictText, Field(max_length=1_000)]
+    decisionBasis: Annotated[StrictText, Field(max_length=300)]
+    evidence: Annotated[list[Annotated[StrictText, Field(max_length=100)]], Field(max_length=10)]
+
+
+class AgentContext(StrictModel):
+    groupId: int = Field(gt=0)
+    groupName: Annotated[StrictText, Field(max_length=80)]
+    currentDateTime: Annotated[StrictText, Field(max_length=50)]
+    memberTotalCount: int = Field(ge=0)
+    members: Annotated[list[AgentMember], Field(max_length=100)]
+    taskTotalCount: int = Field(ge=0)
+    tasks: Annotated[list[AgentTask], Field(max_length=100)]
+    taskDetails: Annotated[list[AgentTaskDetail], Field(max_length=5)]
+    storeInfo: Annotated[list[AgentStoreInfoItem], Field(max_length=100)]
+
+
+class GroupAgentRequest(StrictModel):
+    context: AgentContext
+    history: Annotated[list[AgentConversationMessage], Field(max_length=60)]
+    message: Annotated[StrictText, Field(max_length=2_000)]
+    toolResults: Annotated[list[AgentExecutionResult], Field(max_length=5)] = Field(
+        default_factory=list
+    )
+
+
+class AgentChecklist(StrictModel):
+    title: Annotated[StrictText, Field(max_length=80)]
+    instruction: Annotated[StrictText, Field(max_length=500)]
+    completionType: Literal["PHOTO", "CHECK"]
+    rule: Annotated[str, Field(max_length=1_000)] | None
+
+    @model_validator(mode="after")
+    def require_rule_by_type(self) -> AgentChecklist:
+        if self.completionType == "PHOTO" and (self.rule is None or not self.rule):
+            raise ValueError("PHOTO에는 rule이 필요합니다.")
+        if self.completionType == "CHECK" and self.rule is not None:
+            raise ValueError("CHECK의 rule은 null이어야 합니다.")
+        return self
+
+
+class AgentToolCall(StrictModel):
+    callId: Annotated[StrictText, Field(max_length=40)]
+    tool: AgentToolName
+    dependsOnCallIds: Annotated[
+        list[Annotated[StrictText, Field(max_length=40)]], Field(max_length=4)
+    ]
+    evidenceRefs: Annotated[
+        list[
+            Annotated[
+                StrictText,
+                Field(
+                    max_length=100,
+                    pattern=r"^(USER_REQUEST|CURRENT_TIME|MEMBER:[1-9][0-9]*|STORE_INFO:[1-9][0-9]*|TASK:[1-9][0-9]*|TASK_RUN:r[1-9][0-9]*-[0-9]{8})$",
+                ),
+            ]
+        ],
+        Field(min_length=1, max_length=10),
+    ]
+    decisionBasis: Annotated[StrictText, Field(max_length=300)]
+    taskId: int | None = Field(default=None, gt=0)
+    runId: Annotated[str, Field(max_length=80)] | None = None
+    checklistId: int | None = Field(default=None, gt=0)
+    title: Annotated[str, Field(max_length=80)] | None = None
+    sourceMessage: Annotated[str, Field(max_length=2_000)] | None = None
+    workerId: int | None = Field(default=None, gt=0)
+    dueAt: Annotated[str, Field(max_length=50)] | None = None
+    notifyOnCompletion: bool | None = None
+    active: bool | None = None
+    checklists: Annotated[list[AgentChecklist], Field(max_length=20)]
+    storeInfo: Annotated[list[AgentStoreInfoItem], Field(max_length=100)]
+    removedStoreInfoIds: Annotated[
+        list[Annotated[int, Field(gt=0)]], Field(max_length=100)
+    ]
+    recipientMemberIds: Annotated[
+        list[Annotated[int, Field(gt=0)]], Field(max_length=20)
+    ]
+    notificationMessage: Annotated[str, Field(max_length=300)] | None = None
+
+    @model_validator(mode="after")
+    def require_tool_arguments(self) -> AgentToolCall:
+        if self.tool == "CREATE_TASK":
+            if (
+                not all([self.title, self.sourceMessage, self.workerId, self.dueAt])
+                or self.notifyOnCompletion is None
+                or not self.checklists
+            ):
+                raise ValueError("CREATE_TASK 인자가 부족합니다.")
+        elif self.tool == "UPDATE_TASK":
+            if self.taskId is None or not any(
+                value is not None
+                for value in [
+                    self.title,
+                    self.sourceMessage,
+                    self.workerId,
+                    self.dueAt,
+                    self.notifyOnCompletion,
+                    self.active,
+                ]
+            ):
+                raise ValueError("UPDATE_TASK 인자가 부족합니다.")
+        elif self.tool == "COMPLETE_CHECKLIST":
+            if self.taskId is None or not self.runId or self.checklistId is None:
+                raise ValueError("COMPLETE_CHECKLIST 인자가 부족합니다.")
+        elif self.tool == "REPLACE_STORE_INFO":
+            if any(
+                value is not None
+                for value in [
+                    self.taskId,
+                    self.title,
+                    self.sourceMessage,
+                    self.workerId,
+                    self.dueAt,
+                ]
+            ):
+                raise ValueError(
+                    "REPLACE_STORE_INFO에 태스크 인자를 사용할 수 없습니다."
+                )
+        elif self.tool == "SEND_NOTIFICATION" and (
+            not self.recipientMemberIds or not self.notificationMessage
+        ):
+            raise ValueError("SEND_NOTIFICATION 인자가 부족합니다.")
+        return self
+
+
+class GroupAgentResponse(StrictModel):
+    message: Annotated[str, Field(max_length=4_000)]
+    toolCalls: Annotated[list[AgentToolCall], Field(max_length=5)]
+
+    @model_validator(mode="after")
+    def require_unique_call_ids(self) -> GroupAgentResponse:
+        if not self.toolCalls and not self.message:
+            raise ValueError("도구 호출이 없으면 message가 필요합니다.")
+        call_ids = [call.callId for call in self.toolCalls]
+        if len(call_ids) != len(set(call_ids)):
+            raise ValueError("callId는 중복될 수 없습니다.")
+        previous_ids: set[str] = set()
+        for call in self.toolCalls:
+            if call.callId in call.dependsOnCallIds:
+                raise ValueError("도구 호출은 자기 자신에 의존할 수 없습니다.")
+            if any(dependency not in previous_ids for dependency in call.dependsOnCallIds):
+                raise ValueError("dependsOnCallIds에는 앞선 호출만 사용할 수 있습니다.")
+            previous_ids.add(call.callId)
+        return self
+
+
 class AdminPromptSettings(StrictModel):
     taskGeneration: Annotated[StrictText, Field(max_length=12_000)]
     photoCheck: Annotated[StrictText, Field(max_length=12_000)]
@@ -269,6 +482,7 @@ class ErrorDetail(StrictModel):
         "PHOTO_UNAVAILABLE",
         "AI_BUSY",
         "AI_UNAVAILABLE",
+        "TASK_GENERATION_REJECTED",
     ]
     message: str
     field: Annotated[str, Field(max_length=200)] | None = None

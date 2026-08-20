@@ -19,6 +19,8 @@ from .config import LUNA_MODEL, Settings
 from .photo import PhotoUnavailableError, normalize_cerebras_photo
 from .prompts import (
     CEREBRAS_TASK_GENERATION_FORMAT_CORRECTION,
+    GROUP_AGENT_FORMAT_CORRECTION,
+    GROUP_AGENT_PROMPT,
     KNOWLEDGE_ANSWER_PROMPT,
     PHOTO_CHECK_FIX_CORRECTION,
     PHOTO_CHECK_FORMAT_CORRECTION,
@@ -34,6 +36,8 @@ from .request_trace import update_request_trace
 from .schemas import (
     AttemptCheckResponse,
     CheckableTask,
+    GroupAgentRequest,
+    GroupAgentResponse,
     KnowledgeAnswerResponse,
     ModelAttemptCheckResponse,
     ModelCerebrasTaskGenerationResponse,
@@ -54,6 +58,9 @@ CEREBRAS_TASK_MAX_COMPLETION_TOKENS = 8_192
 CEREBRAS_KNOWLEDGE_MAX_COMPLETION_TOKENS = 2_048
 CEREBRAS_PHOTO_MAX_COMPLETION_TOKENS = 512
 LUNA_KNOWLEDGE_MAX_OUTPUT_TOKENS = 2_048
+LUNA_AGENT_MAX_OUTPUT_TOKENS = 32_768
+CEREBRAS_AGENT_MAX_COMPLETION_TOKENS = 32_768
+AGENT_TIMEOUT_SECONDS = 20
 TASK_GENERATION_CACHE_MAX_ENTRIES = 256
 TASK_GENERATION_CACHE_TTL_SECONDS = 24 * 60 * 60
 ATTEMPT_CHECK_CACHE_MAX_ENTRIES = 1_024
@@ -117,6 +124,85 @@ CEREBRAS_TASK_RESPONSE_FORMAT = {
         },
     },
 }
+CEREBRAS_AGENT_CHECKLIST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "instruction": {"type": "string"},
+        "completionType": {"type": "string", "enum": ["PHOTO", "CHECK"]},
+        "rule": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    },
+    "required": ["title", "instruction", "completionType", "rule"],
+    "additionalProperties": False,
+}
+CEREBRAS_AGENT_STORE_INFO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "storeInfoId": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "category": {
+            "type": "string",
+            "enum": ["LOCATION", "PROMOTION", "DELIVERY", "EQUIPMENT", "RULE", "ETC"],
+        },
+        "title": {"type": "string"},
+        "content": {"type": "string"},
+    },
+    "required": ["storeInfoId", "category", "title", "content"],
+    "additionalProperties": False,
+}
+CEREBRAS_AGENT_TOOL_CALL_PROPERTIES = {
+    "callId": {"type": "string"},
+    "tool": {
+        "type": "string",
+        "enum": [
+            "CREATE_TASK",
+            "UPDATE_TASK",
+            "COMPLETE_CHECKLIST",
+            "REPLACE_STORE_INFO",
+            "SEND_NOTIFICATION",
+        ],
+    },
+    "dependsOnCallIds": {"type": "array", "items": {"type": "string"}},
+    "evidenceRefs": {"type": "array", "items": {"type": "string"}},
+    "decisionBasis": {"type": "string"},
+    "taskId": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+    "runId": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "checklistId": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+    "title": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "sourceMessage": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "workerId": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+    "dueAt": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "notifyOnCompletion": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+    "active": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+    "checklists": {"type": "array", "items": CEREBRAS_AGENT_CHECKLIST_SCHEMA},
+    "storeInfo": {"type": "array", "items": CEREBRAS_AGENT_STORE_INFO_SCHEMA},
+    "removedStoreInfoIds": {"type": "array", "items": {"type": "integer"}},
+    "recipientMemberIds": {"type": "array", "items": {"type": "integer"}},
+    "notificationMessage": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+}
+CEREBRAS_AGENT_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "group_agent_response",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string"},
+                "toolCalls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": CEREBRAS_AGENT_TOOL_CALL_PROPERTIES,
+                        "required": list(CEREBRAS_AGENT_TOOL_CALL_PROPERTIES),
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["message", "toolCalls"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 class AiUnavailableError(Exception):
@@ -144,6 +230,10 @@ class AiOperations(Protocol):
         photo_data_url: str,
         reference_photo_data_url: str | None = None,
     ) -> AttemptCheckResponse: ...
+
+    async def run_group_agent(
+        self, payload: GroupAgentRequest
+    ) -> GroupAgentResponse: ...
 
 
 def _parsed_output(response: object) -> object | None:
@@ -277,6 +367,40 @@ class LunaOperations:
         except ValidationError as error:
             update_request_trace(provider_failure_reason="invalid_model_output")
             raise AiUnavailableError("invalid_model_output") from error
+
+    async def run_group_agent(self, payload: GroupAgentRequest) -> GroupAgentResponse:
+        correction = ""
+        for _ in range(2):
+            try:
+                response = await self._client.responses.parse(
+                    model=self._model,
+                    instructions=instructions(GROUP_AGENT_PROMPT, correction),
+                    input=json.dumps(
+                        payload.model_dump(mode="json"), ensure_ascii=False
+                    ),
+                    text_format=GroupAgentResponse,
+                    timeout=AGENT_TIMEOUT_SECONDS,
+                    max_output_tokens=LUNA_AGENT_MAX_OUTPUT_TOKENS,
+                )
+            except ValidationError:
+                correction = GROUP_AGENT_FORMAT_CORRECTION
+                continue
+            except (OpenAIError, TypeError, ValueError) as error:
+                raise AiUnavailableError(_record_provider_error(error)) from error
+            parsed = _parsed_output(response)
+            try:
+                result = GroupAgentResponse.model_validate(
+                    parsed.model_dump()
+                    if isinstance(parsed, GroupAgentResponse)
+                    else parsed
+                )
+            except ValidationError:
+                correction = GROUP_AGENT_FORMAT_CORRECTION
+                continue
+            _clear_provider_output_trace()
+            return result
+        update_request_trace(provider_failure_reason="invalid_model_output")
+        raise AiUnavailableError("invalid_model_output")
 
     async def check_attempt(
         self,
@@ -520,6 +644,50 @@ class CerebrasOperations:
         ) as error:
             raise AiUnavailableError(_record_provider_error(error)) from error
 
+    async def run_group_agent(self, payload: GroupAgentRequest) -> GroupAgentResponse:
+        correction = ""
+        for _ in range(2):
+            try:
+                response = await asyncio.wait_for(
+                    self._client.chat.completions.create(
+                        model=self._model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": instructions(GROUP_AGENT_PROMPT, correction),
+                            },
+                            {
+                                "role": "user",
+                                "content": json.dumps(
+                                    payload.model_dump(mode="json"),
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        ],
+                        response_format=CEREBRAS_AGENT_RESPONSE_FORMAT,
+                        temperature=0,
+                        seed=0,
+                        max_completion_tokens=CEREBRAS_AGENT_MAX_COMPLETION_TOKENS,
+                    ),
+                    timeout=AGENT_TIMEOUT_SECONDS,
+                )
+                result = GroupAgentResponse.model_validate_json(_chat_output(response))
+            except ValidationError:
+                correction = GROUP_AGENT_FORMAT_CORRECTION
+                continue
+            except (
+                OpenAIError,
+                TimeoutError,
+                TypeError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as error:
+                raise AiUnavailableError(_record_provider_error(error)) from error
+            _clear_provider_output_trace()
+            return result
+        update_request_trace(provider_failure_reason="invalid_model_output")
+        raise AiUnavailableError("invalid_model_output")
+
     async def check_attempt(
         self,
         task: CheckableTask,
@@ -689,6 +857,18 @@ class FailoverAiOperations:
             return await self._fallback.check_attempt(
                 task, photo_data_url, reference_photo_data_url
             )
+
+    async def run_group_agent(self, payload: GroupAgentRequest) -> GroupAgentResponse:
+        try:
+            return await self._primary.run_group_agent(payload)
+        except AiUnavailableError as error:
+            update_request_trace(
+                fallback_provider="OPENROUTER",
+                fallback_model=self._fallback_model,
+                provider_failure_reason=error.reason,
+            )
+            self._log_fallback("agent.respond", error)
+            return await self._fallback.run_group_agent(payload)
 
 
 class ResponseCache[ResponseModel: BaseModel]:
@@ -921,6 +1101,12 @@ class ConfigurableAiOperations:
         return await self._request_limiter.run(
             lambda: service.answer_knowledge(information, question)
         )
+
+    async def run_group_agent(self, payload: GroupAgentRequest) -> GroupAgentResponse:
+        current = self._store.get()
+        update_request_trace(provider=current.provider, model=current.model)
+        service = self._active_service(current)
+        return await self._request_limiter.run(lambda: service.run_group_agent(payload))
 
     async def check_attempt(
         self,

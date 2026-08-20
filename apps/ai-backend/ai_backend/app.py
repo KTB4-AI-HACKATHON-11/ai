@@ -55,6 +55,8 @@ from .schemas import (
     AvailableModel,
     CheckableTask,
     ErrorResponse,
+    GroupAgentRequest,
+    GroupAgentResponse,
     KnowledgeAnswerRequest,
     KnowledgeAnswerResponse,
     PhotoInput,
@@ -513,6 +515,25 @@ def create_app(
         _record_request_payload(payload)
         response = await service.answer_knowledge(payload.information, payload.question)
         update_request_trace(outcome="KNOWLEDGE_ANSWERED")
+        _record_response_payload(response)
+        return response
+
+    @app.post(
+        "/v1/agent/respond",
+        response_model=GroupAgentResponse,
+        responses=errors,
+        dependencies=[Depends(require_auth)],
+    )
+    async def run_group_agent(payload: GroupAgentRequest) -> GroupAgentResponse:
+        _record_request_payload(payload)
+        response = await service.run_group_agent(payload)
+        update_request_trace(
+            outcome=(
+                "AGENT_TOOLS_PLANNED"
+                if response.toolCalls
+                else "AGENT_RESPONSE_GENERATED"
+            )
+        )
         _record_response_payload(response)
         return response
 
