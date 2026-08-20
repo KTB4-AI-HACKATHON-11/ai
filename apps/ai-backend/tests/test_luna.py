@@ -5,7 +5,6 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-
 from ai_backend.concurrency import AiBusyError
 from ai_backend.config import Settings
 from ai_backend.luna import (
@@ -140,6 +139,31 @@ def test_task_generation_corrects_invalid_photo_rule_once() -> None:
     assert "이전 결과가 계약을 어겼다" in responses.instructions[1]
 
 
+def test_task_generation_correction_forbids_an_empty_task_list() -> None:
+    valid = ModelTaskGenerationResponse.model_validate(
+        {
+            "tasks": [
+                {
+                    "title": "POS 확인",
+                    "instruction": "POS를 촬영해 주세요.",
+                    "completionType": "PHOTO",
+                    "rule": "POS 화면이 켜져 있어야 한다.",
+                }
+            ]
+        }
+    )
+    responses = FakeResponses([response_with({"tasks": []}), response_with(valid)])
+    service = LunaOperations("test-key")
+    service._client = SimpleNamespace(responses=responses)  # type: ignore[assignment]
+
+    result = asyncio.run(service.generate_tasks("POS 전원을 확인해"))
+
+    assert result.tasks[0].title == "POS 확인"
+    assert len(responses.instructions) == 2
+    assert "1개 이상 20개 이하" in responses.instructions[1]
+    assert "빈 배열로 반환하지 않는다" in responses.instructions[1]
+
+
 def test_luna_answers_knowledge_with_the_large_request_timeout() -> None:
     parsed = ModelKnowledgeAnswerResponse(answer="행사는 오후 6시에 시작합니다.")
     responses = FakeResponses([response_with(parsed)])
@@ -249,8 +273,10 @@ def test_cerebras_generates_tasks_with_configured_prompt() -> None:
     completions = FakeCompletions(
         [
             (
-                '{"tasks":[{"title":"POS 확인","instruction":"POS를 촬영해 주세요.",'
-                '"completionType":"PHOTO","rule":"POS 화면이 켜져 있어야 한다."}]}'
+                '{"firstTask":{"title":"POS 확인","instruction":"POS를 촬영해 주세요.",'
+                '"completionType":"PHOTO","rule":"POS 화면이 켜져 있어야 한다."},'
+                '"additionalTasks":[{"title":"카운터 확인","instruction":"카운터를 촬영해 주세요.",'
+                '"completionType":"PHOTO","rule":"카운터가 정리되어 있어야 한다."}]}'
             )
         ]
     )
@@ -266,7 +292,7 @@ def test_cerebras_generates_tasks_with_configured_prompt() -> None:
 
     result = asyncio.run(service.generate_tasks("POS 전원을 확인해"))
 
-    assert result.tasks[0].title == "POS 확인"
+    assert [task.title for task in result.tasks] == ["POS 확인", "카운터 확인"]
     assert completions.calls[0]["model"] == "gemma-4-31b"
     assert (
         completions.calls[0]["max_completion_tokens"]
@@ -277,10 +303,48 @@ def test_cerebras_generates_tasks_with_configured_prompt() -> None:
     response_format = completions.calls[0]["response_format"]
     assert isinstance(response_format, dict)
     assert response_format["type"] == "json_schema"
-    task_schema = response_format["json_schema"]["schema"]["properties"]["tasks"]  # type: ignore[index]
-    assert "minItems" not in task_schema
-    assert "maxItems" not in task_schema
+    schema = response_format["json_schema"]["schema"]  # type: ignore[index]
+    assert schema["required"] == ["firstTask", "additionalTasks"]
+    assert "tasks" not in schema["properties"]
+    additional_tasks_schema = schema["properties"]["additionalTasks"]
+    assert "minItems" not in additional_tasks_schema
+    assert "maxItems" not in additional_tasks_schema
     assert "내 태스크 프롬프트" in completions.calls[0]["messages"][0]["content"]  # type: ignore[index]
+    assert "firstTask" in completions.calls[0]["messages"][0]["content"]  # type: ignore[index]
+    assert "additionalTasks" in completions.calls[0]["messages"][0]["content"]  # type: ignore[index]
+
+
+def test_cerebras_retries_an_invalid_required_first_task() -> None:
+    completions = FakeCompletions(
+        [
+            (
+                '{"firstTask":{"title":"POS 확인","instruction":"POS를 촬영해 주세요.",'
+                '"completionType":"PHOTO","rule":null},"additionalTasks":[]}'
+            ),
+            (
+                '{"firstTask":{"title":"POS 확인","instruction":"POS를 촬영해 주세요.",'
+                '"completionType":"PHOTO","rule":"POS 화면이 켜져 있어야 한다."},'
+                '"additionalTasks":[]}'
+            ),
+        ]
+    )
+    service = CerebrasOperations(
+        "test-key",
+        "gemma-4-31b",
+        "내 태스크 프롬프트",
+        "내 사진 프롬프트",
+    )
+    service._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=completions)
+    )
+
+    result = asyncio.run(service.generate_tasks("POS 전원을 확인해"))
+
+    assert result.tasks[0].title == "POS 확인"
+    assert len(completions.calls) == 2
+    retry_prompt = completions.calls[1]["messages"][0]["content"]  # type: ignore[index]
+    assert "firstTask 객체" in retry_prompt
+    assert "additionalTasks 배열" in retry_prompt
 
 
 def test_cerebras_answers_knowledge_with_strict_json_and_large_timeout() -> None:

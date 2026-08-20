@@ -59,7 +59,13 @@ REFERENCE_PHOTO_IDENTITY_CONTRACT = """
 """.strip()
 
 TASK_GENERATION_FORMAT_CORRECTION = (
-    "이전 결과가 계약을 어겼다. PHOTO의 rule은 문자열, CHECK의 rule은 null이어야 한다."
+    "이전 결과가 계약을 어겼다. tasks에는 태스크를 1개 이상 20개 이하로 넣고 "
+    "빈 배열로 반환하지 않는다. PHOTO의 rule은 문자열, CHECK의 rule은 null이어야 한다."
+)
+
+CEREBRAS_TASK_GENERATION_FORMAT_CORRECTION = (
+    "이전 결과가 계약을 어겼다. 첫 태스크는 firstTask 객체에 쓰고 나머지 태스크는 "
+    "additionalTasks 배열에 쓴다. PHOTO의 rule은 문자열, CHECK의 rule은 null이어야 한다."
 )
 
 PHOTO_CHECK_FORMAT_CORRECTION = (
@@ -72,7 +78,9 @@ PHOTO_CHECK_FIX_CORRECTION = (
 
 TASK_GENERATION_JSON_CONTRACT = """
 응답은 설명이나 코드 블록 없이 다음 형태의 JSON 객체 하나만 작성한다.
-최상위에는 tasks 배열만 둔다.
+최상위에는 firstTask 객체와 additionalTasks 배열만 둔다.
+사용자 입력에 대응하는 첫 태스크는 firstTask에 쓰고 나머지 태스크는 additionalTasks에 순서대로 쓴다.
+전체 태스크는 firstTask를 포함해 1개 이상 20개 이하로 작성한다.
 각 태스크에는 title, instruction, completionType, rule 네 키를 모두 둔다.
 completionType은 PHOTO 또는 CHECK 문자열이다.
 PHOTO의 rule은 비어 있지 않은 문자열이고 CHECK의 rule은 null이다.

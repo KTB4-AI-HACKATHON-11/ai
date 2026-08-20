@@ -18,6 +18,7 @@ from .concurrency import AiRequestLimiter
 from .config import LUNA_MODEL, Settings
 from .photo import PhotoUnavailableError, normalize_cerebras_photo
 from .prompts import (
+    CEREBRAS_TASK_GENERATION_FORMAT_CORRECTION,
     KNOWLEDGE_ANSWER_PROMPT,
     PHOTO_CHECK_FIX_CORRECTION,
     PHOTO_CHECK_FORMAT_CORRECTION,
@@ -34,6 +35,7 @@ from .schemas import (
     CheckableTask,
     KnowledgeAnswerResponse,
     ModelAttemptCheckResponse,
+    ModelCerebrasTaskGenerationResponse,
     ModelKnowledgeAnswerResponse,
     ModelTaskGenerationResponse,
     PassResponse,
@@ -56,6 +58,30 @@ TASK_GENERATION_CACHE_TTL_SECONDS = 24 * 60 * 60
 ATTEMPT_CHECK_CACHE_MAX_ENTRIES = 1_024
 ATTEMPT_CHECK_CACHE_TTL_SECONDS = 24 * 60 * 60
 MAX_LOGGED_PROVIDER_OUTPUT_CHARS = 64_000
+CEREBRAS_TASK_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "instruction": {"type": "string"},
+        "completionType": {
+            "type": "string",
+            "enum": ["PHOTO", "CHECK"],
+        },
+        "rule": {
+            "anyOf": [
+                {"type": "string"},
+                {"type": "null"},
+            ]
+        },
+    },
+    "required": [
+        "title",
+        "instruction",
+        "completionType",
+        "rule",
+    ],
+    "additionalProperties": False,
+}
 CEREBRAS_TASK_RESPONSE_FORMAT = {
     "type": "json_schema",
     "json_schema": {
@@ -64,39 +90,13 @@ CEREBRAS_TASK_RESPONSE_FORMAT = {
         "schema": {
             "type": "object",
             "properties": {
-                "tasks": {
+                "firstTask": CEREBRAS_TASK_ITEM_SCHEMA,
+                "additionalTasks": {
                     "type": "array",
-                    "description": (
-                        "사용자 입력의 각 독립 업무를 순서대로 담은 "
-                        "비어 있지 않은 태스크 목록"
-                    ),
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"},
-                            "instruction": {"type": "string"},
-                            "completionType": {
-                                "type": "string",
-                                "enum": ["PHOTO", "CHECK"],
-                            },
-                            "rule": {
-                                "anyOf": [
-                                    {"type": "string"},
-                                    {"type": "null"},
-                                ]
-                            },
-                        },
-                        "required": [
-                            "title",
-                            "instruction",
-                            "completionType",
-                            "rule",
-                        ],
-                        "additionalProperties": False,
-                    },
-                }
+                    "items": CEREBRAS_TASK_ITEM_SCHEMA,
+                },
             },
-            "required": ["tasks"],
+            "required": ["firstTask", "additionalTasks"],
             "additionalProperties": False,
         },
     },
@@ -402,14 +402,22 @@ class CerebrasOperations:
                     ),
                     timeout=CEREBRAS_TIMEOUT_SECONDS,
                 )
-                parsed = ModelTaskGenerationResponse.model_validate_json(
+                parsed = ModelCerebrasTaskGenerationResponse.model_validate_json(
                     _chat_output(response)
                 )
-                result = TaskGenerationResponse.model_validate(parsed.model_dump())
+                candidate = parsed.model_dump()
+                result = TaskGenerationResponse.model_validate(
+                    {
+                        "tasks": [
+                            candidate["firstTask"],
+                            *candidate["additionalTasks"],
+                        ]
+                    }
+                )
                 _clear_provider_output_trace()
                 return result
             except ValidationError:
-                correction = TASK_GENERATION_FORMAT_CORRECTION
+                correction = CEREBRAS_TASK_GENERATION_FORMAT_CORRECTION
             except (
                 OpenAIError,
                 TimeoutError,

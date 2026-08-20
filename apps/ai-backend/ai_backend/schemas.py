@@ -68,6 +68,11 @@ class ModelTaskGenerationResponse(StrictModel):
     tasks: Annotated[list[ModelGeneratedTask], Field(min_length=1, max_length=20)]
 
 
+class ModelCerebrasTaskGenerationResponse(StrictModel):
+    firstTask: ModelGeneratedTask
+    additionalTasks: Annotated[list[ModelGeneratedTask], Field(max_length=19)]
+
+
 class CheckableTask(StrictModel):
     title: Annotated[StrictText, Field(max_length=80)]
     instruction: Annotated[StrictText, Field(max_length=500)]
