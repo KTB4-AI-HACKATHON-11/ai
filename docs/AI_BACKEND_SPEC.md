@@ -8,21 +8,21 @@
 
 | 용도 | Base URL | 포트 | 접근 조건 |
 | --- | --- | --- | --- |
-| AWS 제품 백엔드 | `http://158.180.72.141:8890` | TCP `8890` | OCI 인바운드 허용 목록에 등록된 54.66.6.34 AWS 주소에서만 접근 가능 |
+| AWS 제품 백엔드 | `https://flowcheck-ai.yohan.me.kr:8890` | TCP `8890` | OCI 인바운드 허용 목록에 등록된 54.66.6.34 AWS 주소에서만 접근 가능 |
 
 ```text
-AI_BACKEND_BASE_URL=http://158.180.72.141:8890
+AI_BACKEND_BASE_URL=https://flowcheck-ai.yohan.me.kr:8890
 ```
 
 전체 요청 주소:
 
 ```text
-POST http://158.180.72.141:8890/v1/tasks/generate
-POST http://158.180.72.141:8890/v1/knowledge/answer
-POST http://158.180.72.141:8890/v1/attempts/check
+POST https://flowcheck-ai.yohan.me.kr:8890/v1/tasks/generate
+POST https://flowcheck-ai.yohan.me.kr:8890/v1/knowledge/answer
+POST https://flowcheck-ai.yohan.me.kr:8890/v1/attempts/check
 ```
 
-AI 백엔드 운영 콘솔은 `http://100.86.214.117:8891`이며 제품 백엔드 연동에는 사용하지 않는다. 현재 API 서버는 HTTP로 배포되어 있으므로 운영 전에는 TLS 적용이 필요하다.
+AI 백엔드 운영 콘솔은 `http://100.86.214.117:8891`이며 제품 백엔드 연동에는 사용하지 않는다. 제품 백엔드는 TLS가 적용된 Caddy 프록시와 HTTP/2로 통신하고, Caddy만 내부의 `127.0.0.1:8892` Uvicorn에 접근한다.
 
 | 메소드 | 경로 | 용도 |
 | --- | --- | --- |
@@ -37,7 +37,7 @@ Authorization: Bearer <AI_SERVICE_TOKEN>
 Content-Type: application/json
 ```
 
-- 통신 방식은 동기식 HTTP
+- 통신 방식은 동기식 HTTPS이며 HTTP/2를 우선 사용한다.
 - 제한 시간은 60초다.
 - 기본값으로 AI 제공사 호출은 동시에 16개까지 실행하고, 추가 요청은 최대 64개까지 3초 동안 기다린다.
 - 3초 안에 슬롯이 나지 않거나 대기열까지 차면 `429 AI_BUSY`와 `Retry-After`를 반환한다.
