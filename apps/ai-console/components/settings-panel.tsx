@@ -81,10 +81,8 @@ export function SettingsPanel({
     setSaved("");
     setLoading(true);
     try {
-      const { baseUrl, token } = requireConnection(connection);
-      const response = await fetch(`${baseUrl}/v1/admin/settings`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const { baseUrl } = requireConnection(connection);
+      const response = await fetch(`${baseUrl}/v1/admin/settings`);
       const data = await responseJson(response);
       if (!response.ok) throw new Error(apiError(data, response.status));
       if (!isSettings(data)) throw new Error("설정 응답 형식이 올바르지 않습니다.");
@@ -166,11 +164,10 @@ export function SettingsPanel({
     setSaved("");
     setSaving(true);
     try {
-      const { baseUrl, token } = requireConnection(connection);
+      const { baseUrl } = requireConnection(connection);
       const response = await fetch(`${baseUrl}/v1/admin/settings`, {
         method: "PUT",
         headers: {
-          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({

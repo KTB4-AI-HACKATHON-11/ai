@@ -1,6 +1,5 @@
 export type Connection = {
   backendUrl: string;
-  authKey: string;
 };
 
 type ApiError = { error?: { code?: string; message?: string } };
@@ -18,10 +17,8 @@ export function normalizeBackend(value: string) {
 }
 
 export function requireConnection(connection: Connection) {
-  if (!connection.authKey.trim()) throw new Error("Bearer 키를 입력해 주세요.");
   return {
     baseUrl: normalizeBackend(connection.backendUrl),
-    token: connection.authKey.trim(),
   };
 }
 

@@ -208,10 +208,10 @@ export function ApiTestPanel({
     }
     setGenerating(true);
     try {
-      const { baseUrl, token } = requireConnection(connection);
+      const { baseUrl } = requireConnection(connection);
       const response = await fetch(`${baseUrl}/v1/tasks/generate`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: prompt.trim() }),
       });
       const data = await responseJson(response);
@@ -239,10 +239,10 @@ export function ApiTestPanel({
     }
     setAnsweringKnowledge(true);
     try {
-      const { baseUrl, token } = requireConnection(connection);
+      const { baseUrl } = requireConnection(connection);
       const response = await fetch(`${baseUrl}/v1/knowledge/answer`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           information: information.trim(),
           question: knowledgeQuestion.trim(),
@@ -317,7 +317,7 @@ export function ApiTestPanel({
   async function verifyTask(task: EditableTask) {
     updateTask(task.clientId, { checking: true });
     try {
-      const { baseUrl, token } = requireConnection(connection);
+      const { baseUrl } = requireConnection(connection);
       if (task.completionType !== "PHOTO") throw new Error("PHOTO 태스크만 검증할 수 있습니다.");
       if (!task.title.trim() || !task.instruction.trim() || !task.rule?.trim()) {
         throw new Error("이름, 안내와 Rule을 모두 입력해 주세요.");
@@ -333,7 +333,6 @@ export function ApiTestPanel({
       if (task.referencePhoto) form.append("referencePhoto", task.referencePhoto, task.referencePhoto.name);
       const response = await fetch(`${baseUrl}/v1/attempts/check`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
         body: form,
       });
       const data = await responseJson(response);

@@ -13,7 +13,6 @@ import { addBenchmarkRecord, type BenchmarkTask } from "@/lib/benchmark-store";
 type Tab = "test" | "benchmark" | "logs" | "settings";
 const SERVER_CONNECTION: Connection = {
   backendUrl: "/api/ai",
-  authKey: "server-managed",
 };
 
 export function ConsoleApp() {

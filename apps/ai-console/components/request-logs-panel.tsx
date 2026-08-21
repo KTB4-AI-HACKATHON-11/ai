@@ -177,9 +177,8 @@ export function RequestLogsPanel({ connection }: { connection: Connection }) {
     setLoading(true);
     setError("");
     try {
-      const { baseUrl, token } = requireConnection(connection);
+      const { baseUrl } = requireConnection(connection);
       const response = await fetch(`${baseUrl}/v1/admin/requests`, {
-        headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
       });
       const data = await responseJson(response);

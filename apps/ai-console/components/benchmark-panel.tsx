@@ -148,9 +148,8 @@ export function BenchmarkPanel({
   }, [records]);
 
   async function fetchSettings(): Promise<EffectiveSettings> {
-    const { baseUrl, token } = requireConnection(connection);
+    const { baseUrl } = requireConnection(connection);
     const response = await fetch(`${baseUrl}/v1/admin/settings`, {
-      headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
     });
     const data = await responseJson(response);
@@ -208,7 +207,7 @@ export function BenchmarkPanel({
     setRunningIds((current) => new Set(current).add(record.id));
     try {
       if (!record.photo) throw new Error("인증 사진을 먼저 업로드해 주세요.");
-      const { baseUrl, token } = requireConnection(connection);
+      const { baseUrl } = requireConnection(connection);
       const form = new FormData();
       form.append("task", JSON.stringify(record.task));
       const photo = photoFile(record.photo);
@@ -219,7 +218,6 @@ export function BenchmarkPanel({
       }
       response = await fetch(`${baseUrl}/v1/attempts/check`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
         body: form,
       });
       const data = await responseJson(response);
